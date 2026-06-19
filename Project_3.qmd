@@ -1,0 +1,187 @@
+---
+title: "Netflix Content Format Analysis"
+format:
+  typst:
+    fig-format: png
+    fig-dpi: 300
+    fig-width: 6
+    fig-height: 4
+    include-in-header:
+        - text: |
+            /* Color links */
+            #show link: set text(fill: rgb(0, 0, 255))
+editor: visual
+---
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+# !! Do not edit this code chunk !!
+library(tidyverse)
+library(patchwork)
+```
+
+In this project, you will be working with a dataset about Netflix movie and show viewership. More information about the dataset can be [found here (Tidy Tuesday project).](https://github.com/rfordatascience/tidytuesday/blob/main/data/2025/2025-07-29/readme.md)
+
+**Question:** Are there significant patterns/relationships in entertainment metrics, and do these patterns vary across different content formats?
+
+## Introduction
+
+This dataset focuses on movies and shows from Netflix. Since 2023, Netflix has been curating Engagement Reports. These reports summarize the number of hours each user spent watching each movie and show in the past 6 months. The main features in this dataset include `title`, `available_globally` (1 - Available globally, 0 - Not available globally), `release date`, `hours_viewed`, `runtime` (in "#H #M #S" format), `views`, `format` (either a movie or show), `total_seconds` (runtime in seconds), `release_year` (year the movie/show was released), and `release_month` (month the movie/show was released). For this project, we will focus on `available_globally`, `hours_viewed`, `views`, `format`, `total_seconds`, `release_year`, and `release_month`.
+
+## Approach
+
+For this question, principal component analysis is best to use as the statistical modeling method.
+
+A rotation plot and plot of PCA eigenvalues will be created, and both figures will be used as a singular compound figure. Then, a scatter plot of PC2 vs. PC1 will be created, using color mapping of the `format` variable. `geom_segment` and `geom_text` are used in the rotation plot, `geom_col` is used in the plot of PCA eigenvalues, and `geom_point` from the scatter plot of PC2 vs. PC1.
+
+The rotation plot is best to show the magnitude and direction of each variable’s contribution to the principal components, namely PC1 and PC2. The eigenvalue plot is best to show the proportion of variance explained by each principal component, showing how many components are significant. A scatter plot to show PC2 vs. PC1 is best to visualize our results distributed in reduced dimensional space, identify clustering patterns, and observe how `format` affects these patterns.
+
+## Analysis
+
+```{r, message=F}
+# Read TidyTuesday data directly from GitHub
+library(stringr)
+
+movies = readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/main/data/2025/2025-07-29/movies.csv')
+
+shows = readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/main/data/2025/2025-07-29/shows.csv')
+
+# Combine movie and show datasets
+# Create new variable showing whether it is movie or show
+df = bind_rows(movies %>% mutate(format="movie"),
+               shows %>% mutate(format="show")) %>%
+     # Transform runtime variable (character) into a new numeric variable        of total runtime in seconds, while also dealing with NA values
+     mutate(h=as.numeric(str_extract(runtime, "\\d+(?=H)")),
+            m=as.numeric(str_extract(runtime, "\\d+(?=M)")),
+            s=as.numeric(str_extract(runtime, "\\d+(?=S)")),
+            total_seconds=coalesce(h, 0)*3600 +
+                          coalesce(m, 0)*60 +
+                          coalesce(s, 0),
+            total_seconds=if_else(is.na(runtime),
+                                  NA_real_,
+                                  total_seconds),
+            # Separate release data into year and month
+            release_year=year(release_date),
+            release_month=month(release_date),
+            # Turn available_globally into a binary numeric variable
+            available_globally=ifelse(
+              available_globally=="Yes", 1, 0)) %>%
+     # Remove unnecessary columns
+     select(-source, -h, -m, -s)
+```
+
+```{r}
+## Create rotation plot for PCA analysis
+library(broom)
+
+# Clean df to remove rows with NA values in numeric columns
+df_clean = df %>% 
+  filter(!is.na(available_globally),
+         !is.na(hours_viewed),
+         !is.na(views),
+         !is.na(total_seconds),
+         !is.na(release_year),
+         !is.na(release_month))
+
+# Perform PCA on numeric variables 
+pca_fit = df_clean %>%
+  select(where(is.numeric)) %>%
+  scale() %>%
+  prcomp()
+
+# Create rotation plot of components 1 and 2
+arrow_style = arrow(
+  angle = 20, length = grid::unit(6, "pt"),
+  ends = "first", type = "closed"
+)
+
+rotation_plot = pca_fit %>%
+  tidy(matrix = "rotation") %>%
+  pivot_wider(
+    names_from = "PC", values_from = "value",
+    names_prefix = "PC"
+  ) %>%
+  mutate(
+    # order of variables is:
+    # available_globally, hours_viewed, views, total_seconds,                  release_year, release_month
+    hjust = c(.5, .5, 1.2, .5, .8, 0),
+    vjust = c(1, -0.5, .5, -.4, 1, -.5)
+  ) %>%
+  ggplot(aes(PC1, PC2)) +
+  geom_segment(
+    xend = 0, yend = 0,
+    arrow = arrow_style
+  ) +
+  geom_text(aes(label = column, hjust = hjust, vjust = vjust)) +
+  coord_fixed(
+    xlim = c(-1, 1),
+    ylim = c(-1, 1) 
+  ) +
+  # Clean up theme background
+  theme_minimal() +
+  theme(panel.grid.minor=element_blank())
+```
+
+```{r}
+## Create plot of eigenvalues
+eigenvalues_plot = pca_fit %>%
+  tidy(matrix="eigenvalues") |>
+  ggplot(aes(PC, percent)) + 
+  geom_col() + 
+  scale_x_continuous(
+    breaks = 1:6
+  ) +
+  scale_y_continuous(
+    name="Variance Explained",
+    label=scales::label_percent(accuracy=1)
+  ) +
+  # Clean up theme background
+  theme_minimal() +
+  theme(panel.grid.minor=element_blank())
+```
+
+```{r}
+#| fig-width: 10
+#| fig-height: 10
+#| out-width: "100%"
+## Create compound figure of the rotation plot and eigenvalues plot
+(rotation_plot / eigenvalues_plot) +
+    # Create subplot labels
+    plot_annotation(tag_levels="A",
+                    title="PCA Analysis",
+                    subtitle="(A) Rotation plot of components 1 and 2, (B) Plot of PCA eigenvalues",
+                    # Make the theme aesthetically clean
+                    theme=theme(plot.title=element_text(size=14,
+                                                        face="bold"),
+                                plot.subtitle=element_text(size=12)))
+```
+
+```{r fig.align="center"}
+#| fig-width: 7
+#| fig-height: 7
+#| out-width: "75%"
+## Create scatter plot of PC2 vs. PC1
+pca_fit %>%
+  augment(df_clean) %>%
+  ggplot(aes(.fittedPC1, .fittedPC2)) +
+  geom_point(aes(color=format), alpha=0.5) +
+  scale_x_continuous(name="PC1") +
+  scale_y_continuous(name="PC2") +
+  scale_color_manual(name="Content Format",
+                     labels=c("Movie", "Show"),
+                     values=c("#1b9e77", "#e7298a")) +
+  theme_minimal() +
+  theme(panel.grid.minor=element_blank())
+```
+
+## Discussion
+
+Hours_viewed and views contribute negatively to PC1. Available_globally, release_year, and total_seconds also contribute negatively to PC1, but they contribute much less than the other features. PC1 could show viewer engagement intensity, where more negative PC1 values correspond to higher engagement. Release_month contributes positively to PC1, but contributes weakly. So, seasonality in release dates don't strongly define variation in this dataset.
+
+PC2 is mainly defined by total_seconds, which contributes strongly and positively, whereas release_year and available_globally contribute negatively. PC2 could capture a contrast between how long the content is and release characteristics, where higher PC2 values correspond to longer content.
+
+The scatter plot shows a strong separation between movies and shows. Movies (shown in green) are tightly clustered and concentrated near lower PC2 values. This indicates that movies are more uniform in runtime and release characteristics. Shows (shown in pink) are much more widely spread across both PC1 and PC2. This indicates higher variability in both engagement behavior and content factors.
+
+Along PC1, both formats overlap substantially, meaning that engagement (in views and watch time) doesn't strongly distinguish movies from shows. However, along PC2, shows display a much wider spread, meaning that content duration and release characteristics vary more strongly within shows than movies.
